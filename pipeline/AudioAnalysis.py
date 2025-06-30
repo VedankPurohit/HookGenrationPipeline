@@ -71,9 +71,7 @@ def get_speech_segments_from_vad(
     speaking_state = False
     segment_start_idx = 0
     
-    # TODO: The VAD thresholds (`silence_frames_thresh_factor`, `speech_frames_thresh_factor`)
-    # are hardcoded here. They could be moved to the `CONFIG` dictionary in `config.py`
-    # to allow for easier tuning of VAD sensitivity per run.
+    
     frames_per_second_vad = 1000 / frame_duration_ms if frame_duration_ms > 0 else 33.33 # Default to 30ms frame if 0
     vad_silence_thresh = int(silence_frames_thresh_factor * frames_per_second_vad)
     vad_speech_thresh = int(speech_frames_thresh_factor * frames_per_second_vad)

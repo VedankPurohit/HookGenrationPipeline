@@ -39,9 +39,7 @@ def create_blueprint_from_llm(
                               along with the 'text_include' and 'why_this_clip' (if provided).
                               Returns an empty list if no valid clips can be generated.
     """
-    # TODO: Replace the static `llm_clips` from a file with a dynamic call to an LLM.
-    # This would involve creating a prompt from the `llm_summary.txt` (from the prepare stage)
-    # and using a model (like the one in MoreFeatures/LLM) to generate the creative brief on the fly.
+    
     logger.info("🎬 Refining LLM Hook with Precise Timestamps...")
 
     # Flatten the transcript once for efficient phrase searching

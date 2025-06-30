@@ -82,8 +82,7 @@ def perform_asd_and_crop(
             return seg_vid_path
 
         # 3. Perform Voice Activity Detection (VAD) on the audio segment
-        # TODO: The VAD threshold factors are hardcoded here. These could be moved to `config.py`
-        # to allow for finer control over speech detection sensitivity without changing the code.
+        
         speech_segments: List[Tuple[int, int]] = get_speech_segments_from_vad(
             seg_aud_path, 
             config["VAD_SAMPLE_RATE"], 
