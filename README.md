@@ -33,13 +33,15 @@ This stage is responsible for gathering and processing all raw assets required f
 
 ```mermaid
 graph TD
-    A[YouTube URL] --> B{Download Video & Extract Audio};
-    B --> C[Source Video (.mp4)];
-    B --> D[Source Audio (.wav)];
-    D --> E{Transcription Pipeline};
-    E --> F[Word-Level Transcript (.json)];
-    E --> G[LLM Summary (.txt)];
-    C & F & G --> H[Project Source Assets];
+    A[YouTube URL] --> B{Download Video & Extract Audio}
+    B --> C["Source Video<br>MP4"]
+    B --> D["Source Audio<br>WAV"]
+    D --> E{Transcription Pipeline}
+    E --> F["Word-Level Transcript<br>JSON"]
+    E --> G["LLM Summary<br>TXT"]
+    C --> H["Project Source Assets"]
+    F --> H
+    G --> H
 ```
 
 ### 2. Production Stage (`main.py`)
@@ -60,50 +62,59 @@ This is the core video processing stage, where the raw assets are transformed in
 
 ```mermaid
 graph TD
-    subgraph Preparation Stage (prepare.py)
-        A[YouTube URL] --> B{Download Video & Extract Audio};
-        B --> C[Source Video (MP4)];
-        B --> D[Source Audio (WAV)];
-        D --> E{Transcription Process};
-        E --> F[Raw Deepgram JSON];
-        E --> G[LLM Summary (TXT)];
-        E --> H[WhisperX-compatible Transcript (JSON)];
-        C & F & G & H --> I[Project Source Assets];
+    subgraph "Preparation Stage (prepare.py)"
+        A[YouTube URL] --> B{Download Video & Extract Audio}
+        B --> C["Source Video - MP4"]
+        B --> D["Source Audio - WAV"]
+        D --> E{Transcription Process}
+        E --> F["Raw Deepgram JSON"]
+        E --> G["LLM Summary - TXT"]
+        E --> H["WhisperX-compatible Transcript - JSON"]
+        C --> I[Project Source Assets]
+        F --> I
+        G --> I
+        H --> I
     end
 
-    subgraph Production Stage (main.py)
-        I --> J{Initialization & Asset/Model Loading};
-        J --> K{Blueprint Creation};
-        K --> L[Final Blueprint (Clip List)];
+    subgraph "Production Stage (main.py)"
+        I --> J{Initialization & Asset/Model Loading}
+        J --> K{Blueprint Creation}
+        K --> L[Final Blueprint - Clip List]
 
-        subgraph Per-Clip Processing Loop
-            L --> M{For Each Clip in Blueprint}; %% Loop start
-            M --> N{Segment Extraction (VideoIO.extract_segment_reencode)};
-            N --> O[Segment Video];
-            N --> P[Segment Audio];
+        subgraph "Per-Clip Processing Loop"
+            M{For Each Clip in Blueprint}
+            M --> N{Segment Extraction - VideoIO.extract_segment_reencode}
+            N --> O[Segment Video]
+            N --> P[Segment Audio]
 
-            subgraph Active Speaker Detection & Cropping (perform_asd_and_crop)
-                O & P --> Q{Face Detection (VisionAnalysis.detect_faces_in_video_segment)};
-                Q --> R[Raw Face Detections (Cached)];
-                R --> S{Face Tracking (VisionAnalysis.apply_face_tracking)};
-                S --> T[Tracked Faces (IDs)];
-                P --> U{Voice Activity Detection (AudioAnalysis.get_speech_segments_from_vad)};
-                T --> V{Mouth Activity (VisionAnalysis.get_mouth_activity_per_track)};
-                U & V --> W{Active Speaker Determination (VisionAnalysis.determine_active_speaker_ids)};
-                W --> X[Active Speaker IDs per Frame];
-                X & T --> Y{Single Speaker Heuristics (VisionAnalysis.enforce_single_speaker_heuristics)};
-                Y --> Z[Final Speaker IDs];
-                Z & O --> AA{Crop Calculation & Application (EditingEffects.create_speaker_focused_cropped_clip)};
-                AA --> AB[Cropped Segment Video];
+            subgraph "Active Speaker Detection & Cropping - perform_asd_and_crop"
+                O --> Q{Face Detection - VisionAnalysis.detect_faces_in_video_segment}
+                P --> Q
+
+                Q --> R["Raw Face Detections - Cached"]
+                R --> S{Face Tracking - VisionAnalysis.apply_face_tracking}
+                S --> T["Tracked Faces - IDs"]
+                P --> U{Voice Activity Detection - AudioAnalysis.get_speech_segments_from_vad}
+                T --> V{Mouth Activity - VisionAnalysis.get_mouth_activity_per_track}
+                U --> W{Active Speaker Determination - VisionAnalysis.determine_active_speaker_ids}
+                V --> W
+                W --> X["Active Speaker IDs per Frame"]
+                X --> Y{Single Speaker Heuristics - VisionAnalysis.enforce_single_speaker_heuristics}
+                T --> Y
+                Y --> Z["Final Speaker IDs"]
+                Z --> AA{Crop Calculation & Application - EditingEffects.create_speaker_focused_cropped_clip}
+                O --> AA
+                AA --> AB["Cropped Segment Video"]
             end
 
-            AB --> AC{Filler Word Removal (EditingEffects.refine_clip_by_removing_fillers)};
-            AC --> AD[Refined Segment Video];
-            AD --> AE{Collect Processed Clips}; %% Loop end
+            AB --> AC{Filler Word Removal - EditingEffects.refine_clip_by_removing_fillers}
+            AC --> AD["Refined Segment Video"]
+            AD --> AE{Collect Processed Clips}
         end
 
-        AE --> AF{Final Assembly (VideoIO.concatenate_video_clips)};
-        AF --> AG[Final Video Hook (MP4)];
+        L --> M
+        AE --> AF{Final Assembly - VideoIO.concatenate_video_clips}
+        AF --> AG["Final Video Hook - MP4"]
     end
 ```
 
