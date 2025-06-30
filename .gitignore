@@ -1,3 +1,5 @@
 .env
 *.pyc
 /Output
+error.md
+steps.md

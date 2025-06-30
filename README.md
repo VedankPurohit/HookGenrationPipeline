@@ -62,8 +62,8 @@ This is the core video processing stage, where the raw assets are transformed in
 
 ```mermaid
 graph TD
-    subgraph "Preparation Stage (prepare.py)"
-        A[YouTube URL] --> B{Download Video & Extract Audio}
+    subgraph "Preparation Stage - prepare.py"
+        A[YouTube URL] --> B{Download Video and Extract Audio}
         B --> C["Source Video - MP4"]
         B --> D["Source Audio - WAV"]
         D --> E{Transcription Process}
@@ -76,21 +76,20 @@ graph TD
         H --> I
     end
 
-    subgraph "Production Stage (main.py)"
-        I --> J{Initialization & Asset/Model Loading}
+    subgraph "Production Stage - main.py"
+        I --> J{Initialization and Asset/Model Loading}
         J --> K{Blueprint Creation}
-        K --> L[Final Blueprint - Clip List]
+        K --> L["Final Blueprint - Clip List"]
 
         subgraph "Per-Clip Processing Loop"
-            M{For Each Clip in Blueprint}
+            L --> M{For Each Clip in Blueprint}
             M --> N{Segment Extraction - VideoIO.extract_segment_reencode}
             N --> O[Segment Video]
             N --> P[Segment Audio]
 
-            subgraph "Active Speaker Detection & Cropping - perform_asd_and_crop"
+            subgraph "Active Speaker Detection and Cropping - perform_asd_and_crop"
                 O --> Q{Face Detection - VisionAnalysis.detect_faces_in_video_segment}
                 P --> Q
-
                 Q --> R["Raw Face Detections - Cached"]
                 R --> S{Face Tracking - VisionAnalysis.apply_face_tracking}
                 S --> T["Tracked Faces - IDs"]
@@ -102,7 +101,7 @@ graph TD
                 X --> Y{Single Speaker Heuristics - VisionAnalysis.enforce_single_speaker_heuristics}
                 T --> Y
                 Y --> Z["Final Speaker IDs"]
-                Z --> AA{Crop Calculation & Application - EditingEffects.create_speaker_focused_cropped_clip}
+                Z --> AA{Crop Calculation and Application - EditingEffects.create_speaker_focused_cropped_clip}
                 O --> AA
                 AA --> AB["Cropped Segment Video"]
             end
@@ -112,7 +111,6 @@ graph TD
             AD --> AE{Collect Processed Clips}
         end
 
-        L --> M
         AE --> AF{Final Assembly - VideoIO.concatenate_video_clips}
         AF --> AG["Final Video Hook - MP4"]
     end
