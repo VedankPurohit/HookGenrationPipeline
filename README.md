@@ -153,7 +153,7 @@ HookGen/
 *   FFmpeg (must be installed and accessible in your system's PATH)
 *   An `.env` file in the project root containing your API keys:
     ```
-    HUGGING_FACE_TOKEN="your_hf_token_here"
+    GOOGLE_API_KEY="your_google_token_here"
     DEEPGRAM_API_KEY="your_deepgram_key_here"
     ```
 
@@ -161,7 +161,7 @@ HookGen/
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/your-username/HookGen.git
+    git clone https://github.com/VedankPurohit/HookGenrationPipeline.git
     cd HookGen
     ```
 
