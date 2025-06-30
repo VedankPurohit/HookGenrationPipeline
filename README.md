@@ -58,7 +58,7 @@ This is the core video processing stage, where the raw assets are transformed in
     *   **Filler Word Removal**: If enabled, filler words are identified within the clip's transcript, and those segments are removed with a subtle "punch-in" zoom effect to hide the cut.
 4.  **Final Assembly**: All processed and edited clips are concatenated into a single, seamless final video hook.
 
-**Diagram: Production Stage**
+**Diagram: Complete Pipleine**
 
 ```mermaid
 graph TD
