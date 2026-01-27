@@ -185,7 +185,7 @@ Commands are executed using `uv run`.
 Use `prepare.py` to download the source video and generate the necessary transcripts.
 
 ```bash
-uv run python prepare.py --project-name "my-project" --url "https://www.youtube.com/watch?v=..."
+uv run python prepare.py --project-name "my-project" --url "https://youtu.be/xXCBz_8hM9w?si=uqulo_mf4VtNf4Nn"
 ```
 
 **Step 2: Run the Production Pipeline**

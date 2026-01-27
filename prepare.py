@@ -3,6 +3,7 @@ import json
 import argparse
 import ffmpeg
 import yt_dlp
+import subprocess
 from dotenv import load_dotenv
 
 # Import the new centralized function from the pipeline package
@@ -10,6 +11,19 @@ from pipeline.GetTranscript import generate_all_transcripts
 
 # Load API keys from .env file
 load_dotenv()
+
+def has_audio_stream(video_path: str) -> bool:
+    """Check if a video file contains audio streams."""
+    try:
+        result = subprocess.run([
+            'ffprobe', '-v', 'quiet', '-print_format', 'json',
+            '-show_streams', video_path
+        ], capture_output=True, text=True, check=True)
+
+        streams = json.loads(result.stdout).get('streams', [])
+        return any(stream.get('codec_type') == 'audio' for stream in streams)
+    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError):
+        return False
 
 def download_and_extract_audio(url: str, video_path: str, audio_path: str):
     """Downloads a YouTube video and extracts its audio if they don't exist."""
@@ -19,7 +33,7 @@ def download_and_extract_audio(url: str, video_path: str, audio_path: str):
     if not os.path.exists(video_path):
         print(f"-> Downloading video: {url}")
         ydl_opts = {
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4',
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=mp4]/best[ext=mp4]',
             'outtmpl': video_path,
             'noplaylist': True,
             'quiet': False,
@@ -33,15 +47,22 @@ def download_and_extract_audio(url: str, video_path: str, audio_path: str):
 
     # Extract audio
     if not os.path.exists(audio_path):
-        print(f"-> Extracting audio from {video_path}")
-        try:
-            ffmpeg.input(video_path).output(
-                audio_path, acodec='pcm_s16le', ar='16000', ac=1
-            ).run(quiet=True, overwrite_output=True)
-            print("✅ Audio extracted.")
-        except ffmpeg.Error as e:
-            print(f"❌ FFMPEG ERROR during audio extraction: {e.stderr.decode()}")
-            raise
+        if has_audio_stream(video_path):
+            print(f"-> Extracting audio from {video_path}")
+            try:
+                ffmpeg.input(video_path).output(
+                    audio_path, acodec='pcm_s16le', ar='16000', ac=1
+                ).run(quiet=True, overwrite_output=True)
+                print("✅ Audio extracted.")
+            except ffmpeg.Error as e:
+                print(f"❌ FFMPEG ERROR during audio extraction: {e.stderr.decode()}")
+                raise
+        else:
+            print("⚠️  Warning: Video contains no audio streams. Skipping audio extraction.")
+            print("   Note: Audio-dependent features (transcription, emotion analysis) will not be available.")
+            # Create an empty audio file as a placeholder
+            with open(audio_path, 'wb') as f:
+                pass  # Empty file
     else:
         print("-> Audio already exists. Skipping extraction.")
 
@@ -69,11 +90,16 @@ def main(project_name: str, youtube_url: str, download_only: bool):
 
     # Step 2: Transcribe audio if not in download-only mode
     if not download_only:
-        try:
-            generate_all_transcripts(audio_path, source_assets_dir)
-        except Exception as e:
-            print(f"❌ ERROR: Transcription failed: {e}")
-            return # Stop if transcription failed
+        # Check if we have actual audio content (not just an empty placeholder)
+        if os.path.getsize(audio_path) == 0:
+            print("⚠️  Skipping transcription: No audio available in this video.")
+            print("   Audio-dependent features (transcription, emotion analysis) are not available.")
+        else:
+            try:
+                generate_all_transcripts(audio_path, source_assets_dir)
+            except Exception as e:
+                print(f"❌ ERROR: Transcription failed: {e}")
+                return # Stop if transcription failed
 
     print(f"\n✅ Preparation complete for project '{project_name}'.")
     if not download_only:

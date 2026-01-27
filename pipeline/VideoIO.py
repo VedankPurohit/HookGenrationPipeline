@@ -3,7 +3,8 @@ import ffmpeg
 import os
 import shutil
 import logging
-from typing import List, Optional, Dict, Union, Any
+from typing import List, Optional, Dict, Union, Any, Tuple
+from collections import Counter
 
 from .utils import timestamp_to_seconds
 
@@ -53,6 +54,27 @@ def download_youtube_video(youtube_url: str, output_dir: str, filename: str = "o
         logger.error(f"❌ Error downloading video from {youtube_url}: {e}", exc_info=True)
         return None
 
+def get_video_resolution(video_path: str) -> Optional[Tuple[int, int]]:
+    """
+    Get the resolution (width, height) of a video file.
+
+    Args:
+        video_path (str): Path to the video file
+
+    Returns:
+        Optional[Tuple[int, int]]: (width, height) tuple or None if probe fails
+    """
+    try:
+        probe = ffmpeg.probe(video_path)
+        video_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
+        if video_stream:
+            width = int(video_stream['width'])
+            height = int(video_stream['height'])
+            return (width, height)
+    except Exception as e:
+        logger.warning(f"Could not probe resolution for {video_path}: {e}")
+    return None
+
 def concatenate_video_clips(video_clip_paths_list: List[str], final_output_path: str) -> Optional[str]:
     """
     Concatenates a list of video clips into a single output file.
@@ -87,8 +109,48 @@ def concatenate_video_clips(video_clip_paths_list: List[str], final_output_path:
 
     logger.info(f"🎬 Concatenating {len(video_clip_paths_list)} clips into {final_output_path} using FFmpeg concat filter...")
 
-    # Create input streams for all video and audio parts
-    input_streams = [ffmpeg.input(path) for path in video_clip_paths_list]
+    # Check for resolution consistency and handle mismatches
+    resolutions = []
+    for path in video_clip_paths_list:
+        res = get_video_resolution(path)
+        if res:
+            resolutions.append(res)
+        else:
+            logger.warning(f"Could not determine resolution for {path}, proceeding anyway")
+
+    if resolutions:
+        unique_resolutions = list(set(resolutions))
+        if len(unique_resolutions) > 1:
+            logger.warning(f"⚠️  Resolution mismatch detected! Found {len(unique_resolutions)} different resolutions: {unique_resolutions}")
+            print(f"⚠️  Resolution mismatch: {unique_resolutions} - normalizing all clips")
+
+            # Find the most common resolution, or use the first clip's resolution as standard
+            res_counts = Counter(resolutions)
+            standard_resolution = res_counts.most_common(1)[0][0]
+            std_width, std_height = standard_resolution
+
+            logger.info(f"📐 Normalizing all clips to {std_width}x{std_height}")
+
+            # Create normalized input streams
+            input_streams = []
+            for path in video_clip_paths_list:
+                clip_res = get_video_resolution(path)
+                if clip_res and clip_res != standard_resolution:
+                    # Scale this clip to match standard resolution
+                    logger.debug(f"Scaling {os.path.basename(path)} from {clip_res[0]}x{clip_res[1]} to {std_width}x{std_height}")
+                    scaled_stream = ffmpeg.input(path).filter('scale', std_width, std_height)
+                    input_streams.append(scaled_stream)
+                else:
+                    # Resolution already matches or unknown, use as-is
+                    input_streams.append(ffmpeg.input(path))
+        else:
+            logger.info(f"✅ All clips have consistent resolution: {unique_resolutions[0]}")
+            input_streams = [ffmpeg.input(path) for path in video_clip_paths_list]
+    else:
+        # Could not probe resolutions, proceed without normalization
+        logger.warning("Could not probe resolutions for clips, proceeding without normalization")
+        input_streams = [ffmpeg.input(path) for path in video_clip_paths_list]
+
     video_parts = [stream.video for stream in input_streams]
     audio_parts = [stream.audio for stream in input_streams]
 
@@ -106,7 +168,7 @@ def concatenate_video_clips(video_clip_paths_list: List[str], final_output_path:
         )
         .overwrite_output() # Overwrite output file if it exists
         .run(capture_stdout=True, capture_stderr=True)) # Run FFmpeg command
-        
+
         logger.info(f"✅ Successfully concatenated clips into: {final_output_path}")
         return final_output_path
 

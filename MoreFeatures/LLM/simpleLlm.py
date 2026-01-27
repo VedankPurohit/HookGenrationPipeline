@@ -9,11 +9,13 @@ from MoreFeatures.LLM import prompts
 load_dotenv()
 
 template_map = {
+    "best": prompts.BestClip,  # Default - full creative freedom
     "rapidfire": prompts.RapidFireQna,
     "general": prompts.GeneralClipGenerator,
     "emotional": prompts.EmotionalHighlight,
     "keytakeaway": prompts.KeyTakeaway,
     "controversial": prompts.ControversialMoment,
+    "shorts": prompts.ShortsTemplate,
 }
 
 random_templates = [
@@ -28,7 +30,7 @@ def generate_clips(
     output_filepath: str,
     template_name: str,
     custom_instructions: str = None,
-    model_name: str = "gemini-2.5-flash",
+    model_name: str = "gemini-3-flash-preview",
 ):
     """
     Generates video clips based on a specified template and optional custom instructions.
@@ -71,7 +73,7 @@ def convert_text_to_json(
     input_filepath: str,
     output_filepath: str,
     sub_template: str,
-    model_name: str = "gemini-2.5-flash", # Changed to gemini-2.5-flash as per memory.md
+    model_name: str = "gemini-3-flash-preview",
 ):
     """
     Converts the content of a text file to a JSON file using a specified Gemini model.
@@ -134,16 +136,26 @@ def convert_text_to_json(
         # The response text should be a valid JSON string
         if response.text:
             try:
+                # Clean the response text - strip markdown code blocks if present
+                response_text = response.text.strip()
+                if response_text.startswith("```json"):
+                    response_text = response_text[7:]
+                if response_text.startswith("```"):
+                    response_text = response_text[3:]
+                if response_text.endswith("```"):
+                    response_text = response_text[:-3]
+                response_text = response_text.strip()
+
                 # The API returns the JSON as a string, so we need to parse it
-                json_data = json.loads(response.text)
-                
+                json_data = json.loads(response_text)
+
                 with open(output_filepath, "w", encoding="utf-8") as f:
                     json.dump(json_data, f, indent=4)
                 print(f"Successfully converted '{input_filepath}' to '{output_filepath}'.")
-            except json.JSONDecodeError:
-                print("Error: Gemini did not return a valid JSON string.")
+            except json.JSONDecodeError as e:
+                print(f"Error: Gemini did not return a valid JSON string. {e}")
                 print("--- Model Output ---")
-                print(response.text)
+                print(response.text[:500])
                 print("--------------------")
         else:
             print("Gemini returned an empty response.")

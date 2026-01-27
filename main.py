@@ -260,7 +260,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--use-template",
         type=str,
-        choices=['rapidfire', 'general', 'emotional', 'keytakeaway', 'controversial'],
+        choices=['best', 'rapidfire', 'general', 'emotional', 'keytakeaway', 'controversial', 'shorts'],
         default='rapidfire',
         help="Template for LLM-based clip generation. Defaults to 'rapidfire'."
     )

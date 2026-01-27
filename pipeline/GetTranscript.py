@@ -11,12 +11,13 @@ load_dotenv(dotenv_path=".env")
 logger = logging.getLogger(f"pipeline.{__name__}")
 
 
-def _transcribe_with_deepgram(audio_path: str) -> Dict[str, Any]:
+def _transcribe_with_deepgram(audio_path: str, max_retries: int = 3) -> Dict[str, Any]:
     """
-    Transcribes the given audio file using the Deepgram API.
+    Transcribes the given audio file using the Deepgram API with retry logic for timeouts.
 
     Args:
         audio_path (str): The path to the audio file to transcribe.
+        max_retries (int): Maximum number of retry attempts for network timeouts.
 
     Returns:
         Dict[str, Any]: The raw JSON response from Deepgram as a dictionary.
@@ -29,6 +30,13 @@ def _transcribe_with_deepgram(audio_path: str) -> Dict[str, Any]:
     if not api_key:
         raise ValueError("DEEPGRAM_API_KEY not found in environment variables.")
 
+    # Check file size and warn if very large
+    file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
+    if file_size_mb > 100:
+        logger.warning(f"⚠️  Audio file is very large ({file_size_mb:.1f}MB). This may cause timeouts.")
+    elif file_size_mb > 25:
+        logger.info(f"📊 Large audio file detected ({file_size_mb:.1f}MB). Using extended timeout settings.")
+
     logger.info("Initializing Deepgram client...")
     deepgram = DeepgramClient(api_key)
 
@@ -39,14 +47,50 @@ def _transcribe_with_deepgram(audio_path: str) -> Dict[str, Any]:
     # TODO: The Deepgram model ('nova-2') and other options (language, etc.) are hardcoded.
     # These should be moved to `config.py` to allow users to easily switch to other models
     # or languages (e.g., 'whisper-large') without altering the source code.
-    logger.info("Requesting transcription from Deepgram...")
     options = PrerecordedOptions(
         model="nova-2", language="en", smart_format=True, punctuate=True,
         diarize=True, utterances=True, filler_words=True
     )
-    response = deepgram.listen.rest.v("1").transcribe_file(payload, options)
-    logger.info("✅ Successfully received transcription from Deepgram.")
-    return response.to_dict()
+
+    # Configure extended timeout for large file uploads (inspired by working implementation)
+    import httpx
+    timeout = httpx.Timeout(
+        600.0,  # total timeout (10 minutes for large files)
+        connect=60.0,  # connection timeout
+        read=300.0,  # read timeout
+        write=300.0,  # write timeout (important for large file uploads)
+    )
+
+    last_exception = None
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Requesting transcription from Deepgram (attempt {attempt + 1}/{max_retries})...")
+            response = deepgram.listen.rest.v("1").transcribe_file(payload, options, timeout=timeout)
+            logger.info("✅ Successfully received transcription from Deepgram.")
+            return response.to_dict()
+
+        except Exception as e:
+            last_exception = e
+            error_msg = str(e).lower()
+
+            # Check if this is a timeout or network error that we should retry
+            if any(keyword in error_msg for keyword in ['timeout', 'connection', 'network', 'write operation']):
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 30  # Progressive backoff: 30s, 60s, 90s
+                    logger.warning(f"⚠️  Network/timeout error (attempt {attempt + 1}/{max_retries}): {e}")
+                    logger.info(f"⏳ Retrying in {wait_time} seconds...")
+                    import time
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"❌ All {max_retries} attempts failed due to network/timeout errors")
+            else:
+                # Non-retryable error (API key, file format, etc.)
+                logger.error(f"❌ Non-retryable error during transcription: {e}")
+                break
+
+    # If we get here, all retries failed
+    raise last_exception
 
 
 def _create_llm_summary(deepgram_response: Dict[str, Any]) -> str:
@@ -146,8 +190,8 @@ def generate_all_transcripts(audio_path: str, output_dir: str):
     final_transcript_path = os.path.join(output_dir, "transcript.json")
 
     try:
-        # Step 1: Transcribe
-        deepgram_response = _transcribe_with_deepgram(audio_path)
+        # Step 1: Transcribe with retry logic for network timeouts
+        deepgram_response = _transcribe_with_deepgram(audio_path, max_retries=3)
         with open(raw_transcript_path, "w", encoding="utf-8") as f:
             json.dump(deepgram_response, f, indent=4)
         logger.info(f"💾 Raw Deepgram transcript saved to {raw_transcript_path}")
