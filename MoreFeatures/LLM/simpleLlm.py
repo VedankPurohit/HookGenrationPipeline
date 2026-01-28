@@ -31,7 +31,9 @@ def generate_clips(
     template_name: str,
     custom_instructions: str = None,
     model_name: str = "gemini-3-flash-preview",
-):
+    temperature: float = 1.0,
+    short_count: int = 1,
+) -> int:
     """
     Generates video clips based on a specified template and optional custom instructions.
 
@@ -42,7 +44,13 @@ def generate_clips(
         custom_instructions (str, optional): Custom instructions for the "general" template.
                                              If "general" is selected and this is None, a random
                                              template will be chosen. Defaults to None.
-        model_name (str): The name of the Gemini model to use. Defaults to "gemini-2.5-flash".
+        model_name (str): The name of the Gemini model to use. Defaults to "gemini-3-flash-preview".
+        temperature (float): Controls randomness in output. Higher values (e.g., 1.2) produce more
+                            varied results. Defaults to 1.0.
+        short_count (int): Number of separate non-overlapping shorts to generate. Defaults to 1.
+
+    Returns:
+        int: Number of shorts generated (for multi-short mode, may be less than requested if LLM fails)
     """
     selected_template = None
 
@@ -58,15 +66,18 @@ def generate_clips(
         selected_template = template_map.get(template_name)
         if not selected_template:
             print(f"Error: Template '{template_name}' not found. Please choose from {list(template_map.keys())}.")
-            return
+            return 0
 
     if selected_template:
-        convert_text_to_json(
+        return convert_text_to_json(
             input_filepath=input_filepath,
             output_filepath=output_filepath,
             sub_template=selected_template,
             model_name=model_name,
+            temperature=temperature,
+            short_count=short_count,
         )
+    return 0
 
 
 def convert_text_to_json(
@@ -74,7 +85,9 @@ def convert_text_to_json(
     output_filepath: str,
     sub_template: str,
     model_name: str = "gemini-3-flash-preview",
-):
+    temperature: float = 1.0,
+    short_count: int = 1,
+) -> int:
     """
     Converts the content of a text file to a JSON file using a specified Gemini model.
 
@@ -84,8 +97,12 @@ def convert_text_to_json(
         input_filepath (str): The path to the input text file.
         output_filepath (str): The path to save the output JSON file.
         sub_template (str): The specific template content to be injected into the main system prompt.
-        num_clips (int): The desired number of clips to be generated.
-        model_name (str): The name of the Gemini model to use. Defaults to "gemini-2.5-flash".
+        model_name (str): The name of the Gemini model to use. Defaults to "gemini-3-flash-preview".
+        temperature (float): Controls randomness in output. Higher values produce more varied results.
+        short_count (int): Number of separate non-overlapping shorts to generate. Defaults to 1.
+
+    Returns:
+        int: Number of shorts successfully generated.
     """
     # Configure the Gemini API client
     try:
@@ -97,13 +114,18 @@ def convert_text_to_json(
     except (ValueError, KeyError) as e:
         print(f"API Key Error: {e}")
         print("Please set the GOOGLE_API_KEY environment variable. Get your key from https://aistudio.google.com/")
-        return
+        return 0
 
     # Construct the system prompt using the mainSystem template and injected sub_template
-    system_prompt = prompts.mainSystem.format(
-        sub_template=sub_template
-    )
-    print(f"system prompt - : {system_prompt}")
+    if short_count > 1:
+        # Multi-short mode: prepend the multi_short_wrapper
+        multi_wrapper = prompts.multi_short_wrapper.format(count=short_count)
+        system_prompt = multi_wrapper + "\n\n" + prompts.mainSystem.format(sub_template=sub_template)
+        print(f"🎬 Multi-short mode: Generating {short_count} non-overlapping shorts")
+    else:
+        system_prompt = prompts.mainSystem.format(sub_template=sub_template)
+
+    print(f"system prompt - : {system_prompt[:500]}...")
     # Instantiate the model
     model = genai.GenerativeModel(model_name, system_instruction=system_prompt)
 
@@ -118,9 +140,10 @@ def convert_text_to_json(
         print(f"An error occurred while reading the input file: {e}")
         return
 
-    # 2. Set the generation configuration to ensure JSON output
+    # 2. Set the generation configuration to ensure JSON output with temperature for variety
     generation_config = genai.types.GenerationConfig(
-        response_mime_type="application/json"
+        response_mime_type="application/json",
+        temperature=temperature,
     )
     print(f"Transcript : {text_content[:200]}")
 
@@ -149,16 +172,43 @@ def convert_text_to_json(
                 # The API returns the JSON as a string, so we need to parse it
                 json_data = json.loads(response_text)
 
-                with open(output_filepath, "w", encoding="utf-8") as f:
-                    json.dump(json_data, f, indent=4)
-                print(f"Successfully converted '{input_filepath}' to '{output_filepath}'.")
+                if short_count > 1:
+                    # Multi-short mode: parse nested structure and save multiple files
+                    shorts_saved = 0
+                    base_path = output_filepath.rsplit('.', 1)[0]  # Remove .json extension
+
+                    for key in sorted(json_data.keys()):
+                        if key.startswith('short_'):
+                            short_data = json_data[key]
+                            clips = short_data.get('clips', [])
+                            theme = short_data.get('theme', 'Unknown theme')
+
+                            if clips:
+                                short_num = key.split('_')[1]
+                                short_filepath = f"{base_path}_{short_num}.json"
+                                with open(short_filepath, "w", encoding="utf-8") as f:
+                                    json.dump(clips, f, indent=4)
+                                print(f"✅ Short {short_num}: '{theme}' -> {short_filepath} ({len(clips)} clips)")
+                                shorts_saved += 1
+
+                    print(f"🎬 Successfully generated {shorts_saved} non-overlapping shorts")
+                    return shorts_saved
+                else:
+                    # Single short mode: save as usual
+                    with open(output_filepath, "w", encoding="utf-8") as f:
+                        json.dump(json_data, f, indent=4)
+                    print(f"Successfully converted '{input_filepath}' to '{output_filepath}'.")
+                    return 1
+
             except json.JSONDecodeError as e:
                 print(f"Error: Gemini did not return a valid JSON string. {e}")
                 print("--- Model Output ---")
                 print(response.text[:500])
                 print("--------------------")
+                return 0
         else:
             print("Gemini returned an empty response.")
+            return 0
             
     except Exception as e:
         print(f"An error occurred during the API call: {e}")

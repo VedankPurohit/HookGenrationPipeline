@@ -180,13 +180,43 @@ def concatenate_video_clips(video_clip_paths_list: List[str], final_output_path:
         logger.error(f"❌ An unexpected error occurred during concatenation: {e}", exc_info=True)
         return None
 
+def determine_sentence_type(sentence_context: str, text_include: str) -> str:
+    """
+    Determines how the text_include relates to sentence_context.
+
+    Returns:
+        "Full Sentence" - text_include == sentence_context
+        "Partial" - text_include is a contiguous subset (trimmed from start/end)
+        "Redacted" - words removed from the middle (non-contiguous)
+    """
+    if not sentence_context or not text_include:
+        return "Unknown"
+
+    # Normalize whitespace for comparison
+    ctx = ' '.join(sentence_context.split())
+    inc = ' '.join(text_include.split())
+
+    if ctx == inc:
+        return "Full Sentence"
+
+    # Check if text_include is a contiguous substring of sentence_context
+    if inc in ctx:
+        return "Partial"
+
+    # Check for redaction (words from middle removed)
+    # If text_include words appear in sentence_context but not contiguously, it's redacted
+    return "Redacted"
+
 def extract_segment_reencode(
     input_video_path: str,
     start_ts: Union[str, float, int],
     end_ts: Union[str, float, int],
     output_segment_video_path: str,
     output_segment_audio_path: str,
-    config_dict: Dict[str, Any]
+    config_dict: Dict[str, Any],
+    clip_index: int = 0,
+    debug_mode: bool = False,
+    clip_info: Optional[Dict[str, Any]] = None
 ) -> bool:
     """
     Extracts a video segment and re-encodes it into separate video and audio files.
@@ -208,6 +238,11 @@ def extract_segment_reencode(
                                          (WAV format) will be saved.
         config_dict (Dict[str, Any]): The configuration dictionary, used for settings like
                                      'LOW_VRAM_MODE' and 'VAD_SAMPLE_RATE'.
+        clip_index (int): The index of the current clip (used for debug mode color alternation).
+        debug_mode (bool): If True, overlay the original timestamp on the video with alternating
+                          colors per clip to visualize cuts.
+        clip_info (Dict): Optional clip metadata containing 'sentence_context' and 'text_include'
+                         for determining sentence usage type in debug mode.
 
     Returns:
         bool: True if both video and audio segments were successfully extracted and re-encoded,
@@ -241,10 +276,46 @@ def extract_segment_reencode(
             'acodec': 'aac', # AAC audio codec
             'strict': 'experimental' # Required for AAC codec
         }
+
+        # Build video filter chain
+        vf_filters = []
+
         if config_dict.get("LOW_VRAM_MODE", False):
             # Scale video down to target height to reduce processing load
             target_height = config_dict.get("LOW_VRAM_TARGET_HEIGHT", 720)
-            output_params_video['vf'] = f'scale=-2:{target_height}' # -2 maintains aspect ratio
+            vf_filters.append(f'scale=-2:{target_height}')
+
+        if debug_mode:
+            # Debug mode: overlay original timestamp with alternating colors per clip
+            # Colors alternate: odd clips = white, even clips = yellow
+            color = 'white' if clip_index % 2 == 0 else 'yellow'
+            # Show original timestamp (s_start + current position in clip)
+            # %{pts} gives current position, we add s_start to get original timestamp
+            timestamp_text = f"drawtext=text='%{{pts\\:hms}} | Orig\\: %{{expr\\:{s_start:.3f}+t}}s | Clip {clip_index+1}':fontsize=24:fontcolor={color}:borderw=2:bordercolor=black:x=w-tw-20:y=h-th-20"
+            vf_filters.append(timestamp_text)
+
+            # Add sentence type indicator in bottom-left corner
+            if clip_info:
+                sentence_context = clip_info.get('sentence_context', '')
+                text_include = clip_info.get('text_include', '')
+                sentence_type = determine_sentence_type(sentence_context, text_include)
+
+                # Color code by type: green=full, yellow=partial, red=redacted
+                type_colors = {
+                    'Full Sentence': 'green',
+                    'Partial': 'yellow',
+                    'Redacted': 'red',
+                    'Unknown': 'gray'
+                }
+                type_color = type_colors.get(sentence_type, 'white')
+                sentence_type_text = f"drawtext=text='{sentence_type}':fontsize=24:fontcolor={type_color}:borderw=2:bordercolor=black:x=20:y=h-th-20"
+                vf_filters.append(sentence_type_text)
+                logger.info(f"🔍 Debug mode: Sentence type = {sentence_type}")
+
+            logger.info(f"🔍 Debug mode: Adding timestamp overlay (color: {color}) for clip {clip_index+1}")
+
+        if vf_filters:
+            output_params_video['vf'] = ','.join(vf_filters)
 
         ffmpeg.input(input_video_path, ss=s_start, t=duration)\
             .output(output_segment_video_path, **output_params_video)\

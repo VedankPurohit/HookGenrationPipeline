@@ -17,11 +17,13 @@ Workflow:
 """
 
 import os
+import re
 import time
 import shutil
 import argparse
 import json
 import logging
+import tempfile
 from typing import Dict, Any, List
 
 import pipeline
@@ -29,7 +31,7 @@ from pipeline import setup_logging, log_run_summary
 from retinaface import RetinaFace
 from MoreFeatures.LLM.simpleLlm import generate_clips
 
-def run_production(project_name: str, run_name: str, use_gpu: bool, no_crop: bool, use_custom_clips: str, custom_instructs: str, use_template: str) -> None:
+def run_production(project_name: str, run_name: str, use_gpu: bool, no_crop: bool, use_custom_clips: str, custom_instructs: str, use_template: str, variation_index: int = 0, total_variations: int = 1, debug_mode: bool = False, trimmed_seconds: int = 0, short_count: int = 1) -> None:
     """
     Executes the main video production pipeline.
 
@@ -45,6 +47,11 @@ def run_production(project_name: str, run_name: str, use_gpu: bool, no_crop: boo
         use_custom_clips: Path to a pre-existing JSON file for clip definitions.
         custom_instructs: Custom instructions for the 'general' LLM template.
         use_template: The LLM template to use for clip generation.
+        variation_index: Current variation number (0-indexed) for temperature scaling.
+        total_variations: Total number of variations being generated.
+        debug_mode: If True, overlay timestamps on video with alternating colors to visualize cuts.
+        trimmed_seconds: If > 0, remove the first N seconds from transcript before processing.
+        short_count: Number of separate non-overlapping shorts to generate (default 1).
     """
     # --- STAGE 0: SETUP AND VALIDATION ---
     CONFIG: Dict[str, Any] = pipeline.CONFIG
@@ -56,6 +63,7 @@ def run_production(project_name: str, run_name: str, use_gpu: bool, no_crop: boo
     CONFIG["BASE_OUTPUT_DIR"] = run_dir
     
     CONFIG["ENABLE_ASD_CROP"] = not no_crop
+    CONFIG["DEBUG_MODE"] = debug_mode
     
     # Ensure a clean run by removing previous outputs
     if os.path.exists(run_dir):
@@ -104,12 +112,77 @@ def run_production(project_name: str, run_name: str, use_gpu: bool, no_crop: boo
                 else:
                     logger.info("No custom instructions provided; a random prompt will be selected.")
 
-            generate_clips(
-                input_filepath=llm_transcript_path,
+            # Calculate temperature for variety: base 1.0, increase by 0.15 for each variation
+            # This gives: v1=1.0, v2=1.15, v3=1.3, v4=1.45, v5=1.6 for max diversity
+            temperature = 1.0 + (variation_index * 0.15)
+            if total_variations > 1:
+                logger.info(f"Variation {variation_index + 1}/{total_variations} with temperature {temperature:.2f}")
+
+            # Handle trimmed transcript if requested
+            input_transcript_path = llm_transcript_path
+            if trimmed_seconds > 0:
+                logger.info(f"✂️ Trimming first {trimmed_seconds} seconds from transcript...")
+                with open(llm_transcript_path, 'r') as f:
+                    lines = f.readlines()
+
+                # Filter out lines with start time < trimmed_seconds
+                filtered_lines = []
+                for line in lines:
+                    match = re.search(r'\((\d+\.?\d*)s\s*-', line)
+                    if match:
+                        start_time = float(match.group(1))
+                        if start_time >= trimmed_seconds:
+                            filtered_lines.append(line)
+                    else:
+                        filtered_lines.append(line)
+
+                # Write to a temp file in the run directory
+                trimmed_path = os.path.join(run_dir, "llm_summary_trimmed.txt")
+                with open(trimmed_path, 'w') as f:
+                    f.writelines(filtered_lines)
+
+                logger.info(f"✂️ Removed {len(lines) - len(filtered_lines)} lines, {len(filtered_lines)} remaining")
+                input_transcript_path = trimmed_path
+
+            shorts_generated = generate_clips(
+                input_filepath=input_transcript_path,
                 output_filepath=generated_clips_path,
                 template_name=template_name,
                 custom_instructions=custom_instructs,
+                temperature=temperature,
+                short_count=short_count,
             )
+            
+            # Handle multi-short mode: process each short as a separate video
+            if short_count > 1 and shorts_generated > 0:
+                logger.info(f"🎬 Multi-short mode: Processing {shorts_generated} separate shorts...")
+                base_path = generated_clips_path.rsplit('.', 1)[0]  # Remove .json extension
+                
+                for short_num in range(1, shorts_generated + 1):
+                    short_clips_path = f"{base_path}_{short_num}.json"
+                    if os.path.exists(short_clips_path):
+                        short_run_name = f"{run_name}_short{short_num}"
+                        logger.info(f"📹 Processing short {short_num}/{shorts_generated}: {short_run_name}")
+                        
+                        # Recursively call run_production for each short with short_count=1
+                        run_production(
+                            project_name=project_name,
+                            run_name=short_run_name,
+                            use_gpu=use_gpu,
+                            no_crop=no_crop,
+                            use_custom_clips=short_clips_path,  # Use the generated short file
+                            custom_instructs=None,
+                            use_template=use_template,
+                            variation_index=variation_index,
+                            total_variations=total_variations,
+                            debug_mode=debug_mode,
+                            trimmed_seconds=0,  # Already handled
+                            short_count=1,  # Process as single short
+                        )
+                
+                logger.info(f"🎉 All {shorts_generated} shorts processed!")
+                return  # Exit after processing all shorts
+            
             creative_brief_path = generated_clips_path
 
             if not os.path.exists(creative_brief_path):
@@ -173,7 +246,7 @@ def run_production(project_name: str, run_name: str, use_gpu: bool, no_crop: boo
         # Extract raw video and audio for the current clip
         seg_vid_path = os.path.join(segment_dir, CONFIG["SEGMENT_VIDEO_FILENAME"])
         seg_aud_path = os.path.join(segment_dir, CONFIG["SEGMENT_AUDIO_FILENAME"])
-        if not pipeline.extract_segment_reencode(source_video_path, start_ts, end_ts, seg_vid_path, seg_aud_path, CONFIG):
+        if not pipeline.extract_segment_reencode(source_video_path, start_ts, end_ts, seg_vid_path, seg_aud_path, CONFIG, clip_index=i, debug_mode=CONFIG.get("DEBUG_MODE", False), clip_info=clip_info):
             logger.warning(f"Failed to extract segment for clip {i+1}. Skipping.")
             continue
 
@@ -264,18 +337,74 @@ if __name__ == "__main__":
         default='rapidfire',
         help="Template for LLM-based clip generation. Defaults to 'rapidfire'."
     )
+    parser.add_argument(
+        "--variations",
+        type=int,
+        default=1,
+        help="Number of different video variations to generate (1-10). Each variation uses slightly higher temperature for diversity. Defaults to 1."
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Debug mode: overlay original timestamps on video with alternating colors per clip to visualize cuts and clip sources."
+    )
+    parser.add_argument(
+        "--trimmed",
+        type=int,
+        default=0,
+        metavar="SECONDS",
+        help="Remove the first N seconds from the transcript before processing (e.g., --trimmed 60 to skip intro)."
+    )
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Generate N separate non-overlapping shorts from one LLM call (e.g., --count 8 for 8 unique shorts)."
+    )
     args = parser.parse_args()
 
     start_time = time.time()
-    run_production(
-        project_name=args.project_name,
-        run_name=args.run_name,
-        use_gpu=args.use_gpu,
-        no_crop=args.no_crop,
-        use_custom_clips=args.use_custom_clips,
-        custom_instructs=args.custom_instructs,
-        use_template=args.use_template
-    )
+
+    # Validate variations count
+    variations = max(1, min(10, args.variations))  # Clamp between 1 and 10
+
+    if variations > 1:
+        print(f"🎬 Generating {variations} video variations...")
+        for i in range(variations):
+            variation_run_name = f"{args.run_name}_v{i+1}"
+            print(f"\n{'='*60}")
+            print(f"📹 VARIATION {i+1}/{variations}: {variation_run_name}")
+            print(f"{'='*60}")
+            run_production(
+                project_name=args.project_name,
+                run_name=variation_run_name,
+                use_gpu=args.use_gpu,
+                no_crop=args.no_crop,
+                use_custom_clips=args.use_custom_clips,
+                custom_instructs=args.custom_instructs,
+                use_template=args.use_template,
+                variation_index=i,
+                total_variations=variations,
+                debug_mode=args.debug,
+                trimmed_seconds=args.trimmed,
+                short_count=args.count,
+            )
+        print(f"\n🎉 All {variations} variations complete!")
+    else:
+        run_production(
+            project_name=args.project_name,
+            run_name=args.run_name,
+            use_gpu=args.use_gpu,
+            no_crop=args.no_crop,
+            use_custom_clips=args.use_custom_clips,
+            custom_instructs=args.custom_instructs,
+            use_template=args.use_template,
+            debug_mode=args.debug,
+            trimmed_seconds=args.trimmed,
+            short_count=args.count,
+        )
+
     end_time = time.time()
-    
+
     logging.getLogger('pipeline').info(f"Total execution time: {end_time - start_time:.2f} seconds.")

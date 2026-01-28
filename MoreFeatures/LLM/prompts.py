@@ -6,6 +6,53 @@ common_constraints = """
 -   **Text Accuracy:** Copy text EXACTLY as it appears in the transcript, including punctuation and capitalization.
 """
 
+# Multi-short generation wrapper - generates N distinct non-overlapping shorts
+multi_short_wrapper = """
+### 🎬 MULTI-SHORT GENERATION MODE
+
+**CRITICAL REQUIREMENT:** You must generate **{count} COMPLETELY SEPARATE short videos** from this transcript.
+
+Each short video is a SEPARATE, STANDALONE piece of content. They must:
+1. **NOT OVERLAP** - No timestamp ranges can be shared between shorts
+2. **COVER DIFFERENT TOPICS** - Each short should highlight a different moment/topic
+3. **BE INDEPENDENTLY ENGAGING** - Each short must work on its own
+
+---
+### 📦 OUTPUT FORMAT FOR MULTI-SHORT MODE:
+
+Return a JSON object with {count} shorts, each containing its own array of clips:
+
+```json
+{{
+  "short_1": {{
+    "theme": "Brief description of this short's theme",
+    "clips": [
+      {{
+        "why_this_clip": "(Part 1/n) ...",
+        "original_start": 100.0,
+        "original_end": 105.0,
+        "sentence_context": "...",
+        "text_include": "...",
+        "engagement_potential": "..."
+      }}
+    ]
+  }},
+  "short_2": {{
+    "theme": "Different theme for short 2",
+    "clips": [...]
+  }}
+}}
+```
+
+### ⚠️ MULTI-SHORT RULES:
+1. **ZERO OVERLAP** - If short_1 uses timestamps 100-150s, short_2 CANNOT use any time in that range
+2. **SPREAD ACROSS VIDEO** - Use different sections of the transcript for each short
+3. **EACH SHORT = 30-50 seconds** - Each individual short should be 30-50 seconds total
+4. **UNIQUE HOOKS** - Each short needs its own compelling hook
+
+---
+"""
+
 # Shorter duration constraints for ShortsTemplate
 shorts_constraints = """
 -   **Precision:** Use EXACT timestamps from the transcript. Never invent or approximate timestamps.
