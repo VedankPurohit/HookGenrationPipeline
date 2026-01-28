@@ -223,6 +223,7 @@ def create_blueprint_from_llm(
             "original_start": final_start,
             "original_end": final_end,
             "text_include": text_to_find,
+            "sentence_context": sentence_context,  # Preserve for debug overlay
         }
         final_blueprint.append(clip_data)
 

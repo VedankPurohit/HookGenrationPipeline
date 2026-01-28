@@ -180,32 +180,67 @@ def concatenate_video_clips(video_clip_paths_list: List[str], final_output_path:
         logger.error(f"❌ An unexpected error occurred during concatenation: {e}", exc_info=True)
         return None
 
-def determine_sentence_type(sentence_context: str, text_include: str) -> str:
+def determine_sentence_type(sentence_context: str, text_include: str) -> tuple:
     """
     Determines how the text_include relates to sentence_context.
 
     Returns:
-        "Full Sentence" - text_include == sentence_context
-        "Partial" - text_include is a contiguous subset (trimmed from start/end)
-        "Redacted" - words removed from the middle (non-contiguous)
+        tuple: (type_string, skipped_words_list, cut_positions)
+        - "Full Sentence" - text_include == sentence_context
+        - "Partial" - text_include is a contiguous subset (trimmed from start/end)
+        - "Redacted" - words removed from the middle (non-contiguous)
+        - cut_positions: list of floats (0.0-1.0) indicating where cuts happen in the clip
     """
     if not sentence_context or not text_include:
-        return "Unknown"
+        return ("Unknown", [], [])
 
     # Normalize whitespace for comparison
     ctx = ' '.join(sentence_context.split())
     inc = ' '.join(text_include.split())
 
     if ctx == inc:
-        return "Full Sentence"
+        return ("Full Sentence", [], [])
 
     # Check if text_include is a contiguous substring of sentence_context
     if inc in ctx:
-        return "Partial"
+        return ("Partial", [], [])
 
-    # Check for redaction (words from middle removed)
-    # If text_include words appear in sentence_context but not contiguously, it's redacted
-    return "Redacted"
+    # It's redacted - find which words were skipped and where
+    ctx_words = ctx.split()
+    inc_words = inc.split()
+    
+    # Find words in context that are not in the included text
+    skipped = []
+    cut_positions = []
+    
+    # Try to find where the cuts happen by matching sequences
+    ctx_idx = 0
+    inc_idx = 0
+    total_ctx_words = len(ctx_words)
+    
+    while ctx_idx < len(ctx_words) and inc_idx < len(inc_words):
+        ctx_word = ctx_words[ctx_idx].strip('.,!?;:"\'-').lower()
+        inc_word = inc_words[inc_idx].strip('.,!?;:"\'-').lower()
+        
+        if ctx_word == inc_word:
+            ctx_idx += 1
+            inc_idx += 1
+        else:
+            # Found a skipped word - record its position
+            skipped.append(ctx_words[ctx_idx])
+            # Calculate position as fraction (0.0 to 1.0)
+            position = ctx_idx / total_ctx_words if total_ctx_words > 0 else 0.5
+            if not cut_positions or abs(position - cut_positions[-1]) > 0.05:
+                cut_positions.append(position)
+            ctx_idx += 1
+    
+    # Any remaining context words are also skipped
+    while ctx_idx < len(ctx_words):
+        skipped.append(ctx_words[ctx_idx])
+        ctx_idx += 1
+    
+    # Limit to first 5 skipped words for display
+    return ("Redacted", skipped[:5], cut_positions[:3])
 
 def extract_segment_reencode(
     input_video_path: str,
@@ -298,7 +333,7 @@ def extract_segment_reencode(
             if clip_info:
                 sentence_context = clip_info.get('sentence_context', '')
                 text_include = clip_info.get('text_include', '')
-                sentence_type = determine_sentence_type(sentence_context, text_include)
+                sentence_type, skipped_words, cut_positions = determine_sentence_type(sentence_context, text_include)
 
                 # Color code by type: green=full, yellow=partial, red=redacted
                 type_colors = {
@@ -308,8 +343,41 @@ def extract_segment_reencode(
                     'Unknown': 'gray'
                 }
                 type_color = type_colors.get(sentence_type, 'white')
-                sentence_type_text = f"drawtext=text='{sentence_type}':fontsize=24:fontcolor={type_color}:borderw=2:bordercolor=black:x=20:y=h-th-20"
-                vf_filters.append(sentence_type_text)
+                
+                if sentence_type == 'Redacted' and cut_positions:
+                    # Flash "CUT" only at the exact moments where words were removed
+                    # Each cut_position is a fraction (0.0-1.0) of where in the sentence the cut happens
+                    flash_duration = 0.5  # Show flash for 0.5 seconds around cut point
+                    
+                    for cut_pos in cut_positions:
+                        # Calculate the time in the clip where this cut happens
+                        cut_time = cut_pos * duration
+                        # Enable expression: show only when t is within flash_duration/2 of cut_time
+                        # Flash effect: alternate red/white every 0.1 seconds during the window
+                        enable_expr = f"between(t,{cut_time - flash_duration/2:.2f},{cut_time + flash_duration/2:.2f})"
+                        flash_expr = f"lt(mod(t,0.2),0.1)"
+                        
+                        # Red flash
+                        cut_text1 = f"drawtext=text='CUT':fontsize=36:fontcolor=red:borderw=4:bordercolor=white:x=20:y=h-th-20:enable='{enable_expr}*{flash_expr}'"
+                        vf_filters.append(cut_text1)
+                        # White flash (alternating)
+                        cut_text2 = f"drawtext=text='CUT':fontsize=36:fontcolor=white:borderw=4:bordercolor=red:x=20:y=h-th-20:enable='{enable_expr}*not({flash_expr})'"
+                        vf_filters.append(cut_text2)
+                    
+                    # Show skipped words in top-left corner only during the cut flash
+                    if skipped_words:
+                        # Escape special characters for FFmpeg
+                        skipped_text = ' '.join(skipped_words[:3])  # Show first 3 words
+                        skipped_text = skipped_text.replace("'", "").replace(":", "").replace("\\", "")
+                        # Show during all cut windows
+                        all_cuts_enable = '+'.join([f"between(t,{cp * duration - flash_duration/2:.2f},{cp * duration + flash_duration/2:.2f})" for cp in cut_positions])
+                        skipped_label = f"drawtext=text='SKIPPED\\: {skipped_text}':fontsize=20:fontcolor=red:borderw=2:bordercolor=black:x=20:y=20:enable='{all_cuts_enable}'"
+                        vf_filters.append(skipped_label)
+                        logger.info(f"🔍 Debug mode: Skipped words = {skipped_words} at positions {[f'{p:.1%}' for p in cut_positions]}")
+                else:
+                    sentence_type_text = f"drawtext=text='{sentence_type}':fontsize=24:fontcolor={type_color}:borderw=2:bordercolor=black:x=20:y=h-th-20"
+                    vf_filters.append(sentence_type_text)
+                
                 logger.info(f"🔍 Debug mode: Sentence type = {sentence_type}")
 
             logger.info(f"🔍 Debug mode: Adding timestamp overlay (color: {color}) for clip {clip_index+1}")
