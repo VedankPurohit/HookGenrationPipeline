@@ -16,6 +16,7 @@ template_map = {
     "keytakeaway": prompts.KeyTakeaway,
     "controversial": prompts.ControversialMoment,
     "shorts": prompts.ShortsTemplate,
+    "hypercut": prompts.HyperCut,  # Fast-paced, heavy redactions, non-chronological
 }
 
 random_templates = [

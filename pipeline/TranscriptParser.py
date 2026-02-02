@@ -166,3 +166,194 @@ def find_phrase_in_transcription(
 
     logger.info(f"Phrase '{phrase_to_find[:70]}' not found in the transcription.")
     return None, None
+
+
+def find_redacted_segments(
+    transcription_words: List[Dict[str, Any]],
+    sentence_context: str,
+    text_include: str,
+    clip_start: float,
+    clip_end: float
+) -> List[Dict[str, Any]]:
+    """
+    Finds the timestamps of words that should be cut (redacted) from a clip.
+    
+    Compares sentence_context with text_include to identify which words were
+    intentionally skipped by the LLM, then finds their timestamps in the transcript.
+    
+    Args:
+        transcription_words: Flat list of word dictionaries with 'word', 'start', 'end' keys.
+        sentence_context: The full sentence from the transcript.
+        text_include: The portion the LLM wants to keep (may have gaps).
+        clip_start: Start time of the clip in seconds.
+        clip_end: End time of the clip in seconds.
+    
+    Returns:
+        List of cut segments, each with 'start', 'end' (relative to clip), and 'text'.
+    """
+    def clean_word(w: str) -> str:
+        """Normalize a word for comparison."""
+        return re.sub(r'[.,?!;:\'\"()\[\]{}]', '', w).lower().strip()
+    
+    # Normalize and split both texts
+    ctx_words = sentence_context.split()
+    inc_words = text_include.replace('...', ' ').split()  # Handle ellipsis
+    
+    # Create a set of words to keep (normalized)
+    inc_word_list = [clean_word(w) for w in inc_words if clean_word(w)]
+    
+    # Filter transcript words to those within the clip time range (with buffer)
+    buffer = 2.0  # 2 second buffer on each side
+    words_in_range = [
+        w for w in transcription_words 
+        if 'start' in w and 'end' in w and 
+        clip_start - buffer <= w['start'] <= clip_end + buffer
+    ]
+    
+    if not words_in_range:
+        logger.debug(f"No words found in range [{clip_start:.2f}s - {clip_end:.2f}s]")
+        return []
+    
+    # Find the starting position in transcript that matches sentence_context
+    # Use first few words of sentence_context to anchor
+    ctx_start_words = [clean_word(w) for w in ctx_words[:5] if clean_word(w)]
+    
+    anchor_idx = None
+    for i, word_info in enumerate(words_in_range):
+        if clean_word(word_info.get('word', '')) == ctx_start_words[0]:
+            # Check if next few words also match
+            match = True
+            for j, ctx_word in enumerate(ctx_start_words[1:], 1):
+                if i + j >= len(words_in_range):
+                    match = False
+                    break
+                if clean_word(words_in_range[i + j].get('word', '')) != ctx_word:
+                    match = False
+                    break
+            if match:
+                anchor_idx = i
+                break
+    
+    if anchor_idx is None:
+        logger.debug(f"Could not anchor sentence_context in transcript")
+        return []
+    
+    # Now walk through both the context words and transcript words
+    # Identify which transcript words are NOT in the include list
+    cut_segments = []
+    current_cut_start = None
+    current_cut_words = []
+    
+    inc_idx = 0
+    transcript_idx = anchor_idx
+    
+    for ctx_word in ctx_words:
+        if transcript_idx >= len(words_in_range):
+            break
+            
+        transcript_word_info = words_in_range[transcript_idx]
+        transcript_word = clean_word(transcript_word_info.get('word', ''))
+        ctx_word_clean = clean_word(ctx_word)
+        
+        if not ctx_word_clean:
+            continue
+            
+        # Check if this word should be included
+        should_include = False
+        if inc_idx < len(inc_word_list) and ctx_word_clean == inc_word_list[inc_idx]:
+            should_include = True
+            inc_idx += 1
+        
+        if not should_include:
+            # This word should be cut
+            word_start = transcript_word_info.get('start', clip_start)
+            word_end = transcript_word_info.get('end', clip_end)
+            
+            if current_cut_start is None:
+                current_cut_start = word_start
+                current_cut_words = [transcript_word_info.get('word', '')]
+            else:
+                # Extend the current cut segment
+                current_cut_words.append(transcript_word_info.get('word', ''))
+            current_cut_end = word_end
+        else:
+            # This word should be kept - finalize any pending cut
+            if current_cut_start is not None:
+                # Convert to relative timestamps
+                rel_start = current_cut_start - clip_start
+                rel_end = current_cut_end - clip_start
+                
+                # Only add if it's a meaningful cut (> 0.1 seconds)
+                if rel_end - rel_start > 0.1 and rel_start >= 0:
+                    cut_segments.append({
+                        'start': max(0, rel_start),
+                        'end': rel_end,
+                        'text': ' '.join(current_cut_words)
+                    })
+                current_cut_start = None
+                current_cut_words = []
+        
+        transcript_idx += 1
+    
+    # Finalize any remaining cut at the end
+    if current_cut_start is not None:
+        rel_start = current_cut_start - clip_start
+        rel_end = current_cut_end - clip_start
+        if rel_end - rel_start > 0.1 and rel_start >= 0:
+            cut_segments.append({
+                'start': max(0, rel_start),
+                'end': rel_end,
+                'text': ' '.join(current_cut_words)
+            })
+    
+    if cut_segments:
+        cut_texts = [c['text'] for c in cut_segments]
+        logger.info(f"Found {len(cut_segments)} redacted segment(s) to cut: {cut_texts}")
+
+    return cut_segments
+
+
+def find_inter_word_pauses(
+    words: List[Dict[str, Any]],
+    clip_start: float,
+    clip_end: float,
+    min_pause_sec: float = 0.2
+) -> List[Dict[str, Any]]:
+    """
+    Find gaps > min_pause_sec between consecutive words within clip bounds.
+    Returns cuts with relative timestamps (relative to clip_start).
+
+    Args:
+        words: Flat list of word dictionaries with 'word', 'start', 'end' keys.
+        clip_start: Start time of the clip in seconds.
+        clip_end: End time of the clip in seconds.
+        min_pause_sec: Minimum pause duration in seconds to remove (default 0.2s = 200ms).
+
+    Returns:
+        List of pause segments, each with 'start', 'end' (relative to clip), and 'text'.
+    """
+    pauses = []
+
+    # Filter words within clip range
+    clip_words = [w for w in words
+                  if 'start' in w and 'end' in w
+                  and clip_start <= w['start'] <= clip_end]
+
+    for i in range(len(clip_words) - 1):
+        gap = clip_words[i + 1]['start'] - clip_words[i]['end']
+        if gap >= min_pause_sec:
+            # Keep a small buffer (20ms) on each side to avoid cutting into words
+            pause_start = clip_words[i]['end'] + 0.02
+            pause_end = clip_words[i + 1]['start'] - 0.02
+
+            if pause_end > pause_start:  # Valid pause
+                pauses.append({
+                    'start': pause_start - clip_start,  # Relative to clip
+                    'end': pause_end - clip_start,
+                    'text': f"pause ({gap:.2f}s)"
+                })
+
+    if pauses:
+        logger.debug(f"Found {len(pauses)} pause(s) > {min_pause_sec}s in clip [{clip_start:.2f}s - {clip_end:.2f}s]")
+
+    return pauses

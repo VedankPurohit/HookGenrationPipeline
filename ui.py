@@ -309,7 +309,7 @@ elif page == "Production Hub":
         st.radio("Creative Brief Method", ("Generate with LLM", "Use Custom Clips File"), horizontal=True, key="brief_method_input")
         
         if st.session_state.brief_method_input == "Generate with LLM":
-            st.selectbox("LLM Template", ['best', 'rapidfire', 'general', 'emotional', 'keytakeaway', 'controversial', 'shorts'], key="llm_template_input")
+            st.selectbox("LLM Template", ['best', 'rapidfire', 'general', 'emotional', 'keytakeaway', 'controversial', 'shorts', 'hypercut'], key="llm_template_input")
             if st.session_state.get("llm_template_input") == 'general':
                 st.text_area("Custom Instructions (for 'general' template)", placeholder="e.g., Find 3 clips about the future of AI.", key="custom_instructs_input")
         else:

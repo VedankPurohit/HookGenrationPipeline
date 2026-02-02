@@ -27,11 +27,83 @@ import tempfile
 from typing import Dict, Any, List
 
 import pipeline
-from pipeline import setup_logging, log_run_summary
+from pipeline import setup_logging, log_run_summary, find_best_silence_boundary
 from retinaface import RetinaFace
 from MoreFeatures.LLM.simpleLlm import generate_clips
 
-def run_production(project_name: str, run_name: str, use_gpu: bool, no_crop: bool, use_custom_clips: str, custom_instructs: str, use_template: str, variation_index: int = 0, total_variations: int = 1, debug_mode: bool = False, trimmed_seconds: int = 0, short_count: int = 1) -> None:
+
+def snap_redaction_cuts_to_silence(
+    redaction_cuts: List[Dict[str, Any]],
+    video_path: str,
+    config: Dict[str, Any],
+    temp_dir: str
+) -> List[Dict[str, Any]]:
+    """
+    Snaps redaction cut boundaries to nearby silence for more natural audio cuts.
+
+    Args:
+        redaction_cuts: List of cuts with 'start', 'end' (relative to clip), 'text'.
+        video_path: Path to the video/audio file to analyze for silence.
+        config: Configuration dict containing SILENCE_SNAP_CONFIG.
+        temp_dir: Temporary directory for audio analysis files.
+
+    Returns:
+        List of cuts with start/end times snapped to silence boundaries.
+    """
+    logger = logging.getLogger('pipeline')
+
+    if not redaction_cuts:
+        return redaction_cuts
+
+    snap_config = config.get("SILENCE_SNAP_CONFIG", {
+        'SEARCH_WINDOW_SEC': 0.15,  # Smaller window for word-level cuts
+        'FALLBACK_BUFFER_SEC': 0.02,
+        'MIN_SILENCE_LEN_MS': 30,
+        'SILENCE_THRESH_DBFS_OFFSET': -16
+    })
+
+    # Use tighter settings for word-level cuts
+    word_snap_config = {
+        'SEARCH_WINDOW_SEC': 0.1,  # 100ms search window
+        'FALLBACK_BUFFER_SEC': 0.02,  # 20ms fallback buffer
+        'MIN_SILENCE_LEN_MS': 20,  # 20ms minimum silence
+        'SILENCE_THRESH_DBFS_OFFSET': snap_config.get('SILENCE_THRESH_DBFS_OFFSET', -16)
+    }
+
+    snapped_cuts = []
+    for cut in redaction_cuts:
+        original_start = cut['start']
+        original_end = cut['end']
+
+        # Snap cut start to silence boundary (search before the cut point)
+        snapped_start = find_best_silence_boundary(
+            video_path, original_start, 'before', word_snap_config, temp_dir
+        )
+
+        # Snap cut end to silence boundary (search after the cut point)
+        snapped_end = find_best_silence_boundary(
+            video_path, original_end, 'after', word_snap_config, temp_dir
+        )
+
+        # Ensure snapped values are valid (end > start, start >= 0)
+        snapped_start = max(0, snapped_start)  # Never go negative
+        if snapped_end <= snapped_start:
+            # Fall back to original values with small padding
+            snapped_start = max(0, original_start - 0.02)
+            snapped_end = original_end + 0.02
+
+        logger.debug(f"🔇 Snapped redaction cut: [{original_start:.3f}s-{original_end:.3f}s] → [{snapped_start:.3f}s-{snapped_end:.3f}s]")
+
+        snapped_cuts.append({
+            'start': snapped_start,
+            'end': snapped_end,
+            'text': cut.get('text', '')
+        })
+
+    return snapped_cuts
+
+
+def run_production(project_name: str, run_name: str, use_gpu: bool, no_crop: bool, use_custom_clips: str, custom_instructs: str, use_template: str, variation_index: int = 0, total_variations: int = 1, debug_mode: bool = False, trimmed_seconds: int = 0, short_count: int = 1, no_zoom: bool = False, remove_pauses: bool = False) -> None:
     """
     Executes the main video production pipeline.
 
@@ -52,6 +124,8 @@ def run_production(project_name: str, run_name: str, use_gpu: bool, no_crop: boo
         debug_mode: If True, overlay timestamps on video with alternating colors to visualize cuts.
         trimmed_seconds: If > 0, remove the first N seconds from transcript before processing.
         short_count: Number of separate non-overlapping shorts to generate (default 1).
+        no_zoom: If True, disables the punch-in zoom effect on jump cuts.
+        remove_pauses: If True, removes pauses longer than 200ms between words for faster pacing.
     """
     # --- STAGE 0: SETUP AND VALIDATION ---
     CONFIG: Dict[str, Any] = pipeline.CONFIG
@@ -64,7 +138,14 @@ def run_production(project_name: str, run_name: str, use_gpu: bool, no_crop: boo
     
     CONFIG["ENABLE_ASD_CROP"] = not no_crop
     CONFIG["DEBUG_MODE"] = debug_mode
-    
+
+    # Apply --no-zoom option: disable punch-in zoom effect
+    if no_zoom:
+        CONFIG["PUNCH_IN_ZOOM_FACTOR"] = 1.0
+
+    # Apply --remove-pauses option
+    CONFIG["ENABLE_PAUSE_REMOVAL"] = remove_pauses
+
     # Ensure a clean run by removing previous outputs
     if os.path.exists(run_dir):
         print(f"-> Found existing run '{run_name}'. Deleting old outputs.")
@@ -178,6 +259,8 @@ def run_production(project_name: str, run_name: str, use_gpu: bool, no_crop: boo
                             debug_mode=debug_mode,
                             trimmed_seconds=0,  # Already handled
                             short_count=1,  # Process as single short
+                            no_zoom=no_zoom,
+                            remove_pauses=remove_pauses,
                         )
                 
                 logger.info(f"🎉 All {shorts_generated} shorts processed!")
@@ -253,19 +336,68 @@ def run_production(project_name: str, run_name: str, use_gpu: bool, no_crop: boo
         # Perform Active Speaker Detection (ASD) and smart vertical cropping
         clip_to_refine = pipeline.perform_asd_and_crop(seg_vid_path, seg_aud_path, segment_dir, CONFIG, detector_model_instance=face_detector_model)
 
+        # Apply redaction cuts first (words the LLM intentionally skipped)
+        current_clip_path = clip_to_refine
+        redaction_cuts = clip_info.get('redaction_cuts', [])
+        if redaction_cuts:
+            logger.info(f"🔪 Applying {len(redaction_cuts)} redaction cut(s) to remove skipped words...")
+
+            # Snap redaction cuts to silence boundaries for smoother audio transitions
+            redaction_temp_dir = os.path.join(segment_dir, 'redaction_temp')
+            os.makedirs(redaction_temp_dir, exist_ok=True)
+            snapped_cuts = snap_redaction_cuts_to_silence(
+                redaction_cuts, current_clip_path, CONFIG, redaction_temp_dir
+            )
+            logger.debug(f"🔇 Snapped {len(snapped_cuts)} redaction cuts to silence boundaries")
+
+            # Clean up temp directory
+            if os.path.exists(redaction_temp_dir):
+                shutil.rmtree(redaction_temp_dir, ignore_errors=True)
+
+            redacted_output_path = os.path.join(segment_dir, 'redacted_clip.mp4')
+            redacted_result = pipeline.refine_clip_by_removing_fillers(
+                current_clip_path, snapped_cuts, redacted_output_path, CONFIG
+            )
+            if redacted_result:
+                current_clip_path = redacted_output_path
+                logger.info(f"✅ Redaction cuts applied successfully")
+            else:
+                logger.warning(f"Redaction cutting failed for clip {i+1}. Skipped words may still be present.")
+
         # Refine the clip by removing filler words
-        final_clip_path = clip_to_refine
+        final_clip_path = current_clip_path
         if CONFIG["ENABLE_FILLER_WORD_REMOVAL"]:
             filler_words_cut_list = pipeline.find_filler_words_in_segment(flat_transcript, start_ts, CONFIG)
             
             refined_output_path = os.path.join(segment_dir, 'refined_clip.mp4')
-            refined_clip_result = pipeline.refine_clip_by_removing_fillers(clip_to_refine, filler_words_cut_list, refined_output_path, CONFIG)
+            refined_clip_result = pipeline.refine_clip_by_removing_fillers(current_clip_path, filler_words_cut_list, refined_output_path, CONFIG)
             
             if refined_clip_result:
                 final_clip_path = refined_output_path
             else:
                 logger.warning(f"Filler word removal failed for clip {i+1}. Using unrefined clip.")
-        
+
+        # Remove pauses if enabled
+        if CONFIG.get("ENABLE_PAUSE_REMOVAL", False):
+            pause_cuts = pipeline.find_inter_word_pauses(
+                flat_transcript,
+                start_ts,
+                end_ts,
+                CONFIG.get("MIN_PAUSE_DURATION_SEC", 0.2)
+            )
+
+            if pause_cuts:
+                logger.info(f"⏩ Removing {len(pause_cuts)} pause(s) > 200ms...")
+                pause_removed_path = os.path.join(segment_dir, 'pause_removed.mp4')
+                pause_result = pipeline.refine_clip_by_removing_fillers(
+                    final_clip_path, pause_cuts, pause_removed_path, CONFIG
+                )
+                if pause_result:
+                    final_clip_path = pause_removed_path
+                    logger.info(f"✅ Pauses removed successfully")
+                else:
+                    logger.warning(f"Pause removal failed for clip {i+1}. Using clip with pauses.")
+
         # TODO: Integrate features from the MoreFeatures directory.
         # - EmotionAnalysis: Analyze `seg_aud_path` to get emotion data for the clip.
         # - B_Roll_Integration: Use transcript keywords from `clip_info` to find and insert B-roll.
@@ -333,7 +465,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--use-template",
         type=str,
-        choices=['best', 'rapidfire', 'general', 'emotional', 'keytakeaway', 'controversial', 'shorts'],
+        choices=['best', 'rapidfire', 'general', 'emotional', 'keytakeaway', 'controversial', 'shorts', 'hypercut'],
         default='rapidfire',
         help="Template for LLM-based clip generation. Defaults to 'rapidfire'."
     )
@@ -362,6 +494,16 @@ if __name__ == "__main__":
         metavar="N",
         help="Generate N separate non-overlapping shorts from one LLM call (e.g., --count 8 for 8 unique shorts)."
     )
+    parser.add_argument(
+        "--no-zoom",
+        action="store_true",
+        help="Disable the punch-in zoom effect on jump cuts."
+    )
+    parser.add_argument(
+        "--remove-pauses",
+        action="store_true",
+        help="Remove pauses longer than 200ms between words for faster pacing."
+    )
     args = parser.parse_args()
 
     start_time = time.time()
@@ -389,6 +531,8 @@ if __name__ == "__main__":
                 debug_mode=args.debug,
                 trimmed_seconds=args.trimmed,
                 short_count=args.count,
+                no_zoom=args.no_zoom,
+                remove_pauses=args.remove_pauses,
             )
         print(f"\n🎉 All {variations} variations complete!")
     else:
@@ -403,6 +547,8 @@ if __name__ == "__main__":
             debug_mode=args.debug,
             trimmed_seconds=args.trimmed,
             short_count=args.count,
+            no_zoom=args.no_zoom,
+            remove_pauses=args.remove_pauses,
         )
 
     end_time = time.time()

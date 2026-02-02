@@ -319,6 +319,115 @@ ShortsTemplate = """
 
 
 # ============================================================================
+# HYPERCUT TEMPLATE (Fast-Paced, Heavy Editing, Redactions)
+# ============================================================================
+
+HyperCut = """
+### ⚡ HYPERCUT - FAST-PACED AGGRESSIVE EDITING
+
+**Goal:** Create a HYPER-EDITED, fast-paced video with aggressive cuts. Think TikTok edits, meme compilations, or viral "best moments" compilations. Maximum energy through editing.
+
+---
+## 🎯 HYPERCUT PHILOSOPHY
+
+This is NOT a traditional clip. You are creating a **rapid-fire montage** where:
+- Individual clips are 0.5-3 seconds each
+- Words are DELIBERATELY CUT from sentences to create impact
+- Chronological order is OPTIONAL - go for maximum energy flow
+- Silence and "dead air" words are completely eliminated
+
+---
+## 🔪 REDACTION TECHNIQUE (CRITICAL!)
+
+**You MUST actively redact words from sentences.** This creates punchy, impactful clips.
+
+### Example of Redaction:
+- **Full sentence:** "So basically what I'm trying to say is that the market is completely broken"
+- **Redacted for impact:** "the market is completely broken" (cut "So basically what I'm trying to say is that")
+
+### Another Example:
+- **Full sentence:** "I think, you know, honestly speaking, this changes everything"  
+- **Redacted for impact:** "this changes everything" (cut "I think, you know, honestly speaking,")
+
+### HOW TO SPECIFY REDACTION:
+```json
+{
+  "sentence_context": "So basically what I'm trying to say is that the market is completely broken",
+  "text_include": "the market is completely broken"
+}
+```
+The system will automatically CUT the words from sentence_context that are NOT in text_include.
+
+---
+## 📋 CLIP SELECTION RULES:
+
+1. **QUANTITY:** Generate 10-20 clips (more is better for this format)
+2. **LENGTH:** Each clip should be 0.5-3 seconds (rarely longer)
+3. **CONTENT:**
+   - Punchy statements
+   - Emotional reactions ("Wow", "That's crazy", "No way")
+   - Key words only (redact filler words aggressively)
+   - Questions (especially rhetorical)
+   - Numbers and statistics
+   - Names of people/places/things
+   
+4. **ORDER:** NON-CHRONOLOGICAL is encouraged. Arrange for:
+   - Maximum energy flow
+   - Building tension
+   - Surprise cuts
+   - Punchline structures (setup → payoff)
+
+---
+## 🎬 CLIP TYPES TO INCLUDE:
+
+| Type | Duration | Example |
+|------|----------|---------|
+| Reaction | 0.5-1s | "Wow." "Exactly." "What?" |
+| Punchline | 1-2s | "...a billion dollars." |
+| Question | 1-3s | "But here's the thing..." |
+| Statement | 2-3s | "This changes everything." |
+| Number | 1-2s | "Forty years." "One mile." |
+
+---
+## ⚠️ HYPERCUT RULES:
+
+✅ **DO:**
+- Cut aggressively - remove ALL filler words
+- Create sentence fragments that stand alone
+- Mix chronological order for energy
+- Use reactions as transitions
+- Create rhythm through editing
+
+❌ **DON'T:**
+- Include full, complete sentences (boring!)
+- Keep "um", "uh", "like", "you know"
+- Preserve context that doesn't add value
+- Make clips longer than 4 seconds
+- Keep slow, meandering content
+
+---
+## 📦 OUTPUT FORMAT:
+
+Return 10-20 clips. **Total duration: 30-60 seconds** (many short clips = longer total).
+
+For EACH clip:
+```json
+{
+  "why_this_clip": "(Part X/Y) Why this specific fragment hits",
+  "original_start": EXACT_START,
+  "original_end": EXACT_END,
+  "sentence_context": "Full sentence from transcript (8+ words for reliable matching)",
+  "text_include": "ONLY the words you want to keep (this is your REDACTION tool!)",
+  "engagement_potential": "What makes this fragment punchy"
+}
+```
+
+---
+**Remember: Every word costs attention. Cut ruthlessly. Make it hit.**
+"""
+
+
+# ============================================================================
 # BEST CLIP - FULL CAPABILITY PROMPT (DEFAULT)
 # ============================================================================
 

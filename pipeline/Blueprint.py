@@ -3,7 +3,7 @@ import shutil
 import logging
 from typing import List, Dict, Any, Tuple, Optional
 
-from .TranscriptParser import flatten_whisperx_transcript, find_phrase_in_transcription
+from .TranscriptParser import flatten_whisperx_transcript, find_phrase_in_transcription, find_redacted_segments
 from .AudioAnalysis import find_best_silence_boundary
 
 logger = logging.getLogger(f"pipeline.{__name__}")
@@ -78,11 +78,17 @@ def merge_overlapping_clips(clips: List[Dict[str, Any]], overlap_groups: List[Li
                     original_end = current_clip['original_end']
                     current_clip['original_end'] = max(current_clip['original_end'], next_clip['original_end'])
                     
-                    # Combine text
+                    # Combine text_include
                     current_text = current_clip.get('text_include', '')
                     next_text = next_clip.get('text_include', '')
                     if next_text and next_text not in current_text:
-                        current_clip['text_include'] = f"{current_text} | {next_text}"
+                        current_clip['text_include'] = f"{current_text} {next_text}"
+                    
+                    # Combine sentence_context
+                    current_ctx = current_clip.get('sentence_context', '')
+                    next_ctx = next_clip.get('sentence_context', '')
+                    if next_ctx and next_ctx not in current_ctx:
+                        current_clip['sentence_context'] = f"{current_ctx} {next_ctx}"
                     
                     # Combine explanations
                     current_why = current_clip.get('why_this_clip', '')
@@ -225,6 +231,7 @@ def create_blueprint_from_llm(
             "text_include": text_to_find,
             "sentence_context": sentence_context,  # Preserve for debug overlay
         }
+        
         final_blueprint.append(clip_data)
 
     # --- STAGE 4: DETECT AND RESOLVE OVERLAPPING CLIPS ---
@@ -248,6 +255,38 @@ def create_blueprint_from_llm(
     else:
         logger.info("✅ No overlapping clips detected - proceeding with original blueprint")
         print("✅ No overlapping clips found - all clips are properly sequenced")
+
+    # --- STAGE 5: DETECT REDACTED CLIPS AND CALCULATE CUT SEGMENTS ---
+    # This runs AFTER overlap merging because merging can create new redaction scenarios
+    logger.info("🔪 Checking for redacted clips (words removed from middle)...")
+    
+    for clip_data in final_blueprint:
+        sentence_context = clip_data.get('sentence_context', '')
+        text_include = clip_data.get('text_include', '')
+        
+        if sentence_context and text_include:
+            ctx_norm = ' '.join(sentence_context.split())
+            inc_norm = ' '.join(text_include.replace('...', ' ').split())
+            
+            # It's redacted if text_include is not equal to and not a substring of sentence_context
+            is_redacted = (ctx_norm != inc_norm) and (inc_norm not in ctx_norm)
+            
+            if is_redacted:
+                clip_start = clip_data['original_start']
+                clip_end = clip_data['original_end']
+                logger.info(f"🔪 Detected redacted clip [{clip_start:.2f}s - {clip_end:.2f}s] - calculating cut segments...")
+                
+                redaction_cuts = find_redacted_segments(
+                    flat_transcript,
+                    sentence_context,
+                    text_include,
+                    clip_start,
+                    clip_end
+                )
+                if redaction_cuts:
+                    clip_data["redaction_cuts"] = redaction_cuts
+                    cut_texts = [c['text'] for c in redaction_cuts]
+                    logger.info(f"🔪 Found {len(redaction_cuts)} segment(s) to cut: {cut_texts}")
 
     # Clean up temporary directory used for silence analysis
     if os.path.exists(temp_dir_for_analysis):

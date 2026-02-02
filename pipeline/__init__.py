@@ -25,7 +25,7 @@ from .LoggerSetup import setup_logging
 
 # --- Transcript Parsing Module ---
 # Expose functions for handling the transcript data.
-from .TranscriptParser import flatten_whisperx_transcript, find_phrase_in_transcription
+from .TranscriptParser import flatten_whisperx_transcript, find_phrase_in_transcription, find_inter_word_pauses
 
 # --- I/O Module ---
 # Expose functions for downloading, cutting, and joining video files.
@@ -79,6 +79,7 @@ __all__ = [
     # Transcript
     "flatten_whisperx_transcript",
     "find_phrase_in_transcription",
+    "find_inter_word_pauses",
     # I/O
     "download_youtube_video",
     "extract_segment_reencode",
